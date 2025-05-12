@@ -5,7 +5,6 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 
 import java.awt.*;
-import java.awt.event.*;
 import java.util.*;
 import java.util.List;
 
@@ -20,6 +19,8 @@ public class SimuluadorDeAlocacaoDeMemoria extends JFrame {
     private final JTextField NomeDoCampo, tamanhoDoCampo;
     private JLabel labelStatusDaMemoria;
     private final DefaultTableModel ModeloTabela;
+    private static final int tamanhoDaPagina= 50;
+    private int contagemDeFalhasDePagina = 0;
 
     
     private int nextFitIndex = 0;
@@ -128,7 +129,7 @@ public class SimuluadorDeAlocacaoDeMemoria extends JFrame {
             };
     
             if (success) {
-                p.state = ProcessState.PRONTO;
+                p.estado = StatusDoProcesso.PRONTO;
                 ModeloListaDeProcesso.addElement(p.toString());
                 atualizarTabelaDeProcessos();
                 repaint();
@@ -142,7 +143,7 @@ public class SimuluadorDeAlocacaoDeMemoria extends JFrame {
         botaoDeReiniciar.addActionListener(e -> {
             processos.clear();
             ModeloListaDeProcesso.clear();
-            blocosDeMemoria.forEach(BlocoDeMemoria::clear);
+            blocosDeMemoria.forEach(BlocoDeMemoria::limpo);
             nextFitIndex = 0;
             atualizarTabelaDeProcessos();
             atualiarStatusDeMemoria();
@@ -156,16 +157,16 @@ public class SimuluadorDeAlocacaoDeMemoria extends JFrame {
             }
             new Thread(() -> {
                 Processos p = processos.get(new Random().nextInt(processos.size()));
-                if (p.state == ProcessState.EXECUTANDO || p.state == ProcessState.PRONTO) {
-                    p.blocked = true;
-                    p.state = ProcessState.BLOQUEADO;
+                if (p.estado == StatusDoProcesso.EXECUTANDO || p.estado == StatusDoProcesso.PRONTO) {
+                    p.bloqueado = true;
+                    p.estado = StatusDoProcesso.BLOQUEADO;
                     atualizarTabelaDeProcessos();
                     repaint();
                     try {
                         Thread.sleep(3000);
                     } catch (InterruptedException ignored) {}
-                    p.blocked = false;
-                    p.state = ProcessState.PRONTO;
+                    p.bloqueado = false;
+                    p.estado = StatusDoProcesso.PRONTO;
                     atualizarTabelaDeProcessos();
                     repaint();
                 }
@@ -182,82 +183,80 @@ public class SimuluadorDeAlocacaoDeMemoria extends JFrame {
     }
 
     private boolean alocarFirstFit(Processos p) {
-        for (BlocoDeMemoria block : blocosDeMemoria) {
-            if (block.isFree() && block.size >= p.size) {
-                block.allocate(p);
-                return true;
-            }
-        }
-        return false;
+        return alocarPorOrdem(p, blocosDeMemoria);
     }
 
     private boolean alocarBestFit(Processos p) {
-        BlocoDeMemoria best = null;
-        for (BlocoDeMemoria block : blocosDeMemoria) {
-            if (block.isFree() && block.size >= p.size) {
-                if (best == null || block.size < best.size) {
-                    best = block;
+        int paginasAlocadas = 0;
+        for (Pagina pagina : p.paginas) {
+            boolean alocada = false;
+            for (BlocoDeMemoria bloco : blocosDeMemoria) {
+                if (bloco.temQuadroLivre()) {
+                    bloco.addPagina(pagina);
+                    alocada = true;
+                    break;
                 }
             }
+            if (!alocada) {
+            	contagemDeFalhasDePagina++;
+                return false; // Falha de alocação
+            }
+            paginasAlocadas++;
         }
-        if (best != null) {
-            best.allocate(p);
-            return true;
-        }
-        return false;
+        return true;
     }
 
     private boolean alocarWorstFit(Processos p) {
-        BlocoDeMemoria worst = null;
-        for (BlocoDeMemoria block : blocosDeMemoria) {
-            if (block.isFree() && block.size >= p.size) {
-                if (worst == null || block.size > worst.size) {
-                    worst = block;
-                }
-            }
-        }
-        if (worst != null) {
-            worst.allocate(p);
-            return true;
-        }
-        return false;
+        List<BlocoDeMemoria> ordenado = new ArrayList<>(blocosDeMemoria);
+        ordenado.sort((b1, b2) -> Integer.compare(b2.tamanho, b1.tamanho));
+        return alocarPorOrdem(p, ordenado);
     }
 
     private boolean alocarNextFit(Processos p) {
-        int n = blocosDeMemoria.size();
-        for (int i = 0; i < n; i++) {
-            int index = (nextFitIndex + i) % n;
-            BlocoDeMemoria block = blocosDeMemoria.get(index);
-            if (block.isFree() && block.size >= p.size) {
-                block.allocate(p);
-                nextFitIndex = (index + 1) % n;
-                return true;
+        int startIndex = nextFitIndex;
+        for (Pagina pagina : p.paginas) {
+            boolean alocada = false;
+            int tentativas = 0;
+            while (tentativas < blocosDeMemoria.size()) {
+                BlocoDeMemoria bloco = blocosDeMemoria.get(nextFitIndex);
+                if (bloco.temQuadroLivre()) {
+                    bloco.addPagina(pagina);
+                    alocada = true;
+                    break;
+                }
+                nextFitIndex = (nextFitIndex + 1) % blocosDeMemoria.size();
+                tentativas++;
             }
+            if (!alocada) {
+                contagemDeFalhasDePagina++;
+                return false;
+            }
+            nextFitIndex = (nextFitIndex + 1) % blocosDeMemoria.size();
         }
-        return false;
+        return true;
     }
 
     private void startScheduler() {
     new Thread(() -> {
         while (true) {
-            List<Processos> readyProcesses = new ArrayList<>();
-            for (BlocoDeMemoria block : blocosDeMemoria) {
-                if (block.process != null && !block.process.blocked && block.process.state != ProcessState.FINALIZADO) {
-                    readyProcesses.add(block.process);
+            List<Processos> processosProntos = new ArrayList<>();
+            for (Processos p : processos) {
+                if (!p.bloqueado && p.estado != StatusDoProcesso.FINALIZADO) {
+                    processosProntos.add(p);
                 }
             }
 
             // Escalonamento por prioridade (menor número = maior prioridade)
-            readyProcesses.sort(Comparator.comparingInt(p -> p.priority));
+            processosProntos.sort(Comparator.comparingInt(p -> p.prioridade));
 
-            for (Processos p : readyProcesses) {
-                p.state = ProcessState.EXECUTANDO;
+            for (Processos p : processosProntos) {
+                p.estado = StatusDoProcesso.EXECUTANDO;
                 atualizarTabelaDeProcessos();
                 repaint();
                 try {
                     Thread.sleep(2000); // tempo de execução simulado
                 } catch (InterruptedException ignored) {}
-                p.state = ProcessState.PRONTO;
+                p.estado = StatusDoProcesso.PRONTO;
             }
 
             atualizarTabelaDeProcessos();
@@ -273,13 +272,19 @@ public class SimuluadorDeAlocacaoDeMemoria extends JFrame {
     private void drawMemoryBlocks(Graphics g) {
         int y = 20;
         for (BlocoDeMemoria block : blocosDeMemoria) {
-            g.setColor(block.process == null ? Color.LIGHT_GRAY : (block.process.blocked ? Color.ORANGE : Color.GREEN));
+            g.setColor(Color.LIGHT_GRAY);
             g.fillRect(50, y, 200, 40);
             g.setColor(Color.BLACK);
             g.drawRect(50, y, 200, 40);
-            g.drawString("Bloco " + block.id + ": " + block.size + "KB", 60, y + 15);
-            if (block.process != null) {
-                g.drawString(block.process.name + " (" + block.process.size + "KB)", 60, y + 35);
+            g.drawString("Bloco " + block.id + ": " + block.tamanho + "KB", 60, y + 15);
+            int py = y + 20;
+            for (Pagina pagina : block.paginas) {
+                g.setColor(pagina.processo.bloqueado ? Color.ORANGE : Color.GREEN);
+                g.fillRect(60, py, 180, 10);
+                g.setColor(Color.BLACK);
+                g.drawRect(60, py, 180, 10);
+                g.drawString(pagina.processo.nome + " P" + pagina.NumeroDaPagina, 65, py + 9);
+                py += 12;
             }
             y += 60;
         }
@@ -288,24 +293,43 @@ public class SimuluadorDeAlocacaoDeMemoria extends JFrame {
         SwingUtilities.invokeLater(() -> {
             ModeloTabela.setRowCount(0);
             for (Processos p : processos) {
-                ModeloTabela.addRow(new Object[]{p.name, p.priority, p.state});
+                ModeloTabela.addRow(new Object[]{p.nome, p.prioridade, p.estado});
             }
         });
     }
 
     private void atualiarStatusDeMemoria() {
-        int totalMemory = 0;
-        int usedMemory = 0;
+        int memoriaTotal = 0;
+        int memoriaUsada = 0;
 
         for (BlocoDeMemoria block : blocosDeMemoria) {
-            totalMemory += block.size;
-            if (block.process != null) {
-                usedMemory += block.size;
+            memoriaTotal += block.tamanho;
+            memoriaUsada += block.paginas.size() * tamanhoDaPagina;
+            }
+        
+
+        int memoriaLivre = memoriaTotal - memoriaUsada;
+        labelStatusDaMemoria.setText(
+        	    "Memória: Total: " + memoriaTotal + "KB | Ocupado: " + memoriaUsada + "KB | Livre: " + memoriaLivre + "KB | Paginas Faltantes: " + contagemDeFalhasDePagina
+        	);
+    }
+    
+    private boolean alocarPorOrdem(Processos p, List<BlocoDeMemoria> blocosOrdenados) {
+        for (Pagina pagina : p.paginas) {
+            boolean alocada = false;
+            for (BlocoDeMemoria bloco : blocosOrdenados) {
+                if (bloco.temQuadroLivre()) {
+                    bloco.addPagina(pagina);
+                    alocada = true;
+                    break;
+                }
+            }
+            if (!alocada) {
+                contagemDeFalhasDePagina++;
+                return false;
             }
         }
-
-        int freeMemory = totalMemory - usedMemory;
-        labelStatusDaMemoria.setText("Memória: Total: " + totalMemory + "KB | Ocupado: " + usedMemory + "KB | Livre: " + freeMemory + "KB");
+        return true;
     }
 
     public static void main(String[] args) {
@@ -315,46 +339,64 @@ public class SimuluadorDeAlocacaoDeMemoria extends JFrame {
     // Classes auxiliares
 
     static class BlocoDeMemoria {
-        int id, size;
-        Processos process;
+        int id, tamanho;
+        List<Pagina> paginas = new ArrayList<>();
 
-        BlocoDeMemoria(int id, int size) {
+        BlocoDeMemoria(int id, int tamanho) {
             this.id = id;
-            this.size = size;
+            this.tamanho = tamanho;
         }
 
-        boolean isFree() {
-            return process == null;
+        boolean temQuadroLivre() {
+            return paginas.size() < (tamanho / tamanhoDaPagina);
         }
 
-        void allocate(Processos p) {
-            this.process = p;
+        void addPagina(Pagina p) {
+            paginas.add(p);
         }
 
-        void clear() {
-            this.process = null;
+        void limpo() {
+            paginas.clear();
+        }
+
+        boolean containsProcess(Processos p) {
+            return paginas.stream().anyMatch(pg -> pg.processo == p);
+        }
+       }  
+    
+    static class Pagina {
+        Processos processo;
+        int NumeroDaPagina;
+
+        Pagina(Processos processo, int NumeroDaPagina) {
+            this.processo = processo;
+            this.NumeroDaPagina = NumeroDaPagina;
         }
     }
-    enum ProcessState {
+    enum StatusDoProcesso {
         NOVO, PRONTO, EXECUTANDO, BLOQUEADO, FINALIZADO
     }
     
     static class Processos {
-        String name;
-        int size;
-        boolean blocked = false;
-        int priority;// menor valor = maior prioridade
-        ProcessState state = ProcessState.NOVO;
+        String nome;
+        int tamanho;
+        boolean bloqueado = false;
+        int prioridade;
+        StatusDoProcesso estado = StatusDoProcesso.NOVO;
+        List<Pagina> paginas = new ArrayList<>();
 
-        Processos(String name, int size, int priority) {
-            this.name = name;
-            this.size = size;
-            this.priority = priority;
+        Processos(String nome, int tamanho, int prioridade) {
+            this.nome = nome;
+            this.tamanho = tamanho;
+            this.prioridade = prioridade;
+            int numPaginas = (int) Math.ceil(tamanho / (double) tamanhoDaPagina);
+            for (int i = 0; i < numPaginas; i++) {
+                paginas.add(new Pagina(this, i));
+            }
         }
 
         public String toString() {
-            return name + " (" + size + "KB, P=" + priority + ") [" + state + "]";
+            return nome + " (" + tamanho + "KB, P=" + prioridade + ") [" + estado + "]";
         }
-        
     }
 }
